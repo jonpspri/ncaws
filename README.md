@@ -8,6 +8,7 @@ A rich terminal user interface (TUI) for navigating and interacting with AWS ser
   - **ECS Path**: Clusters → Services → Tasks → Containers
   - **EC2 Path**: EC2 Instances
 - 🔍 **Real-time Information**: View live status of ECS services, tasks, containers, and EC2 instances
+- 📋 **Detailed Info Popups**: Press 'i' to view comprehensive details about any selected AWS resource
 - 💻 **Interactive Terminals**:
   - Execute commands directly in ECS containers using ECS Exec
   - SSH into EC2 instances (SSM Session Manager or traditional SSH)
@@ -68,8 +69,9 @@ cargo run --release
 
 - **↑/↓** or **j/k**: Navigate up/down in lists
 - **Enter**: Select item and drill down
-- **Esc** or **Backspace**: Go back to previous level
+- **Esc** or **Backspace**: Go back to previous level (or close info popup)
 - **r**: Refresh current view
+- **i**: Show detailed info about the selected item (opens popup)
 - **q**: Quit application
 
 ### ECS Exec

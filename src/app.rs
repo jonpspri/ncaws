@@ -112,6 +112,7 @@ pub struct App {
     pub loading: bool,
     pub error_message: Option<String>,
     pub status_message: String,
+    pub show_info_popup: bool,
     quit: bool,
 }
 
@@ -150,8 +151,17 @@ impl App {
             loading: false,
             error_message: None,
             status_message: "Select a region to begin".to_string(),
+            show_info_popup: false,
             quit: false,
         })
+    }
+
+    pub fn toggle_info_popup(&mut self) {
+        self.show_info_popup = !self.show_info_popup;
+    }
+
+    pub fn close_info_popup(&mut self) {
+        self.show_info_popup = false;
     }
 
     pub fn current_items_count(&self) -> usize {

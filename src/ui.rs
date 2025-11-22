@@ -21,6 +21,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_header(f, app, chunks[0]);
     draw_main_content(f, app, chunks[1]);
     draw_footer(f, app, chunks[2]);
+
+    // Draw info popup on top if enabled
+    if app.show_info_popup {
+        draw_info_popup(f, app);
+    }
 }
 
 fn draw_header(f: &mut Frame, app: &App, area: Rect) {
@@ -457,7 +462,8 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Span::raw("↑/↓: navigate | "),
         Span::raw("Enter: select | "),
         Span::raw("Esc: back | "),
-        Span::raw("r: refresh"),
+        Span::raw("r: refresh | "),
+        Span::styled("i: info", Style::default().fg(Color::Yellow)),
     ];
 
     if app.navigation.level == NavigationLevel::Container {
@@ -486,4 +492,201 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         .style(Style::default().fg(Color::White));
 
     f.render_widget(footer, area);
+}
+
+fn draw_info_popup(f: &mut Frame, app: &App) {
+    let area = f.size();
+
+    // Create centered popup (80% width, 80% height)
+    let popup_width = (area.width * 80) / 100;
+    let popup_height = (area.height * 80) / 100;
+    let popup_x = (area.width - popup_width) / 2;
+    let popup_y = (area.height - popup_height) / 2;
+
+    let popup_area = Rect {
+        x: popup_x,
+        y: popup_y,
+        width: popup_width,
+        height: popup_height,
+    };
+
+    // Clear the popup area
+    let clear_block = Block::default()
+        .style(Style::default().bg(Color::Reset));
+    f.render_widget(clear_block, popup_area);
+
+    let info_text = get_info_text(app);
+
+    let paragraph = Paragraph::new(info_text)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Info (Press 'i' or 'Esc' to close) ")
+                .style(Style::default().fg(Color::Cyan))
+        )
+        .wrap(ratatui::widgets::Wrap { trim: true });
+
+    f.render_widget(paragraph, popup_area);
+}
+
+fn get_info_text(app: &App) -> String {
+    match app.navigation.level {
+        NavigationLevel::Region => {
+            if let Some(region) = app.regions.get(app.selected_index) {
+                format!(
+                    "Region Information\n\
+                    ═══════════════════\n\n\
+                    Name: {}\n\
+                    ",
+                    region.name
+                )
+            } else {
+                "No region selected".to_string()
+            }
+        }
+        NavigationLevel::ServiceType => {
+            if let Some(service_type) = app.service_types.get(app.selected_index) {
+                match service_type {
+                    ServiceType::ECS => {
+                        "ECS (Elastic Container Service)\n\
+                        ════════════════════════════════\n\n\
+                        AWS ECS is a fully managed container orchestration service.\n\n\
+                        Features:\n\
+                        • Run Docker containers at scale\n\
+                        • Integrate with other AWS services\n\
+                        • Support for Fargate (serverless) and EC2 launch types\n\
+                        ".to_string()
+                    }
+                    ServiceType::EC2 => {
+                        "EC2 (Elastic Compute Cloud)\n\
+                        ════════════════════════════\n\n\
+                        AWS EC2 provides resizable compute capacity in the cloud.\n\n\
+                        Features:\n\
+                        • Virtual servers (instances) in various configurations\n\
+                        • Multiple instance types optimized for different use cases\n\
+                        • Flexible pricing models (On-Demand, Reserved, Spot)\n\
+                        ".to_string()
+                    }
+                }
+            } else {
+                "No service type selected".to_string()
+            }
+        }
+        NavigationLevel::Cluster => {
+            if let Some(cluster) = app.clusters.get(app.selected_index) {
+                format!(
+                    "ECS Cluster Information\n\
+                    ═══════════════════════\n\n\
+                    Name: {}\n\n\
+                    ARN:\n{}\n\
+                    ",
+                    cluster.name,
+                    cluster.arn
+                )
+            } else {
+                "No cluster selected".to_string()
+            }
+        }
+        NavigationLevel::Service => {
+            if let Some(service) = app.services.get(app.selected_index) {
+                format!(
+                    "ECS Service Information\n\
+                    ═══════════════════════\n\n\
+                    Name: {}\n\
+                    Status: {}\n\
+                    Desired Count: {}\n\
+                    Running Count: {}\n\n\
+                    ARN:\n{}\n\
+                    ",
+                    service.name,
+                    service.status,
+                    service.desired_count,
+                    service.running_count,
+                    service.arn
+                )
+            } else {
+                "No service selected".to_string()
+            }
+        }
+        NavigationLevel::Task => {
+            if let Some(task) = app.tasks.get(app.selected_index) {
+                format!(
+                    "ECS Task Information\n\
+                    ════════════════════\n\n\
+                    Task ID: {}\n\
+                    Status: {}\n\
+                    CPU: {}\n\
+                    Memory: {}\n\n\
+                    ARN:\n{}\n\
+                    ",
+                    task.task_id,
+                    task.status,
+                    task.cpu,
+                    task.memory,
+                    task.arn
+                )
+            } else {
+                "No task selected".to_string()
+            }
+        }
+        NavigationLevel::Container => {
+            if let Some(container) = app.containers.get(app.selected_index) {
+                let runtime_info = container.runtime_id
+                    .as_ref()
+                    .map(|id| format!("Runtime ID: {}\n", id))
+                    .unwrap_or_else(|| "Runtime ID: N/A\n".to_string());
+
+                format!(
+                    "Container Information\n\
+                    ═════════════════════\n\n\
+                    Name: {}\n\
+                    Status: {}\n\
+                    {}\n\
+                    Image:\n{}\n\
+                    ",
+                    container.name,
+                    container.status,
+                    runtime_info,
+                    container.image
+                )
+            } else {
+                "No container selected".to_string()
+            }
+        }
+        NavigationLevel::Ec2Instance => {
+            if let Some(instance) = app.ec2_instances.get(app.selected_index) {
+                let public_ip = instance.public_ip
+                    .as_ref()
+                    .map(|ip| format!("Public IP: {}\n", ip))
+                    .unwrap_or_else(|| "Public IP: None\n".to_string());
+
+                let private_ip = instance.private_ip
+                    .as_ref()
+                    .map(|ip| format!("Private IP: {}\n", ip))
+                    .unwrap_or_else(|| "Private IP: None\n".to_string());
+
+                format!(
+                    "EC2 Instance Information\n\
+                    ════════════════════════\n\n\
+                    Name: {}\n\
+                    Instance ID: {}\n\
+                    Type: {}\n\
+                    State: {}\n\
+                    Availability Zone: {}\n\n\
+                    Network:\n\
+                    {}{}\
+                    ",
+                    instance.name,
+                    instance.instance_id,
+                    instance.instance_type,
+                    instance.state,
+                    instance.availability_zone,
+                    public_ip,
+                    private_ip
+                )
+            } else {
+                "No instance selected".to_string()
+            }
+        }
+    }
 }

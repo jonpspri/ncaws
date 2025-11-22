@@ -86,7 +86,14 @@ async fn run_app(
                             app.select_item(tx).await?;
                         }
                         KeyCode::Esc | KeyCode::Backspace => {
-                            app.go_back();
+                            if app.show_info_popup {
+                                app.close_info_popup();
+                            } else {
+                                app.go_back();
+                            }
+                        }
+                        KeyCode::Char('i') => {
+                            app.toggle_info_popup();
                         }
                         KeyCode::Char('e') | KeyCode::Char('s') => {
                             // Execute command on container (e) or SSH to EC2 (s)
