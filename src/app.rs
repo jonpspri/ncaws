@@ -62,6 +62,9 @@ pub struct Ec2Instance {
     pub private_ip: Option<String>,
     #[allow(dead_code)]
     pub availability_zone: String,
+    pub key_name: Option<String>,
+    pub iam_instance_profile: Option<String>,
+    pub ssm_managed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

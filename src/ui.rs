@@ -665,6 +665,22 @@ fn get_info_text(app: &App) -> String {
                     .map(|ip| format!("Private IP: {}\n", ip))
                     .unwrap_or_else(|| "Private IP: None\n".to_string());
 
+                let key_name = instance.key_name
+                    .as_ref()
+                    .map(|key| format!("SSH Key Pair: {}\n", key))
+                    .unwrap_or_else(|| "SSH Key Pair: None\n".to_string());
+
+                let ssm_status = if instance.ssm_managed {
+                    "SSM Managed: ✓ Yes (SSM Session Manager available)\n"
+                } else {
+                    "SSM Managed: ✗ No (SSM not available, use traditional SSH)\n"
+                };
+
+                let iam_profile = instance.iam_instance_profile
+                    .as_ref()
+                    .map(|arn| format!("IAM Instance Profile:\n{}\n", arn))
+                    .unwrap_or_else(|| "IAM Instance Profile: None\n".to_string());
+
                 format!(
                     "EC2 Instance Information\n\
                     ════════════════════════\n\n\
@@ -672,17 +688,23 @@ fn get_info_text(app: &App) -> String {
                     Instance ID: {}\n\
                     Type: {}\n\
                     State: {}\n\
-                    Availability Zone: {}\n\n\
+                    Availability Zone: {}\n\
+                    {}\n\
                     Network:\n\
-                    {}{}\
+                    {}{}\n\
+                    Access:\n\
+                    {}{}\n\
                     ",
                     instance.name,
                     instance.instance_id,
                     instance.instance_type,
                     instance.state,
                     instance.availability_zone,
+                    iam_profile,
                     public_ip,
-                    private_ip
+                    private_ip,
+                    key_name,
+                    ssm_status
                 )
             } else {
                 "No instance selected".to_string()

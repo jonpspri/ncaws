@@ -104,14 +104,29 @@ When viewing containers:
 
 When viewing EC2 instances:
 - Press **s** to connect to the selected EC2 instance
+- Press **i** to view instance details including SSM availability and key pair name
+
+**Smart Connection Menu:**
+The application automatically detects which connection methods are available:
+- **SSM Session Manager** is only offered if the instance is managed by SSM (checked via `ssm:DescribeInstanceInformation`)
+- Shows the instance's configured key pair name for reference
 
 **Connection options:**
+
 1. **AWS Systems Manager (SSM)** - Recommended, no SSH keys required
+   - Only shown if instance is SSM-managed
    - Requires SSM agent running on the instance
    - Instance role must have `AmazonSSMManagedInstanceCore` policy
    - No security group configuration needed for SSH port
+   - Automatically detected and indicated with ✓ in info popup
 
-2. **Traditional SSH** - Direct SSH connection
+2. **Traditional SSH** - Direct SSH connection with key selection
+   - Always available for instances with IP addresses
+   - Prompts for username (default: ec2-user)
+   - **Interactive SSH key selection**: Enter path to your private key file
+     - Press Enter to use default SSH key or SSH agent
+     - Suggested path based on instance's key pair name
+     - Example: `~/.ssh/my-keypair.pem`
    - Requires SSH key pair
    - Security group must allow port 22
    - Instance must have public IP or be accessible from your network
@@ -193,6 +208,7 @@ Make sure your AWS credentials have these permissions:
   - `ecs:ExecuteCommand` (for ECS Exec)
 - **EC2:**
   - `ec2:DescribeInstances`
+  - `ssm:DescribeInstanceInformation` (to check SSM availability)
   - `ssm:StartSession` (for SSM connections)
 
 ## Future Enhancements

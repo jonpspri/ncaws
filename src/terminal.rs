@@ -150,6 +150,9 @@ pub async fn start_ssh_session(instance: &Ec2Instance) -> Result<()> {
     println!("║ Instance:  {:<51} ║", instance.instance_id);
     println!("║ Name:      {:<51} ║", instance.name);
     println!("║ State:     {:<51} ║", instance.state);
+    if let Some(key_name) = &instance.key_name {
+        println!("║ Key Pair:  {:<51} ║", key_name);
+    }
     if let Some(public_ip) = &instance.public_ip {
         println!("║ Public IP: {:<51} ║", public_ip);
     }
@@ -158,12 +161,26 @@ pub async fn start_ssh_session(instance: &Ec2Instance) -> Result<()> {
     }
     println!("╟────────────────────────────────────────────────────────────────╢");
     println!("║ Choose connection method:                                      ║");
-    println!("║   1) AWS Systems Manager (SSM) - Recommended                   ║");
-    println!("║   2) Traditional SSH                                           ║");
-    println!("║   3) Cancel                                                    ║");
+
+    let mut option_number = 1;
+    let ssh_option_number;
+    let cancel_option_number;
+
+    // Only offer SSM if the instance is managed by SSM
+    if instance.ssm_managed {
+        println!("║   {}) AWS Systems Manager (SSM) - Recommended                   ║", option_number);
+        option_number += 1;
+    }
+
+    ssh_option_number = option_number;
+    println!("║   {}) Traditional SSH                                           ║", option_number);
+    option_number += 1;
+
+    cancel_option_number = option_number;
+    println!("║   {}) Cancel                                                    ║", option_number);
     println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-    print!("Enter choice (1-3): ");
+    print!("Enter choice (1-{}): ", option_number);
     use std::io::Write;
     std::io::stdout().flush()?;
 
@@ -172,8 +189,10 @@ pub async fn start_ssh_session(instance: &Ec2Instance) -> Result<()> {
 
     let choice = choice.trim();
 
-    match choice {
-        "1" => {
+    // Parse choice as number for comparison
+    if let Ok(choice_num) = choice.parse::<usize>() {
+        if instance.ssm_managed && choice_num == 1 {
+            // SSM connection
             println!("\nStarting SSM session...\n");
             let status = Command::new("aws")
                 .arg("ssm")
@@ -198,14 +217,18 @@ pub async fn start_ssh_session(instance: &Ec2Instance) -> Result<()> {
             } else {
                 println!("\n✓ SSM session ended successfully\n");
             }
-        }
-        "2" => {
+        } else if choice_num == ssh_option_number {
+            // Traditional SSH
             if instance.state != "running" {
                 eprintln!("\n❌ Instance is not in running state (current: {})", instance.state);
             } else if let Some(ip) = instance.public_ip.as_ref().or(instance.private_ip.as_ref()) {
                 println!("\n╔════════════════════════════════════════════════════════════════╗");
                 println!("║ SSH Connection Options                                        ║");
                 println!("╟────────────────────────────────────────────────────────────────╢");
+                if let Some(key_name) = &instance.key_name {
+                    println!("║ Instance Key Pair: {:<43} ║", key_name);
+                    println!("╟────────────────────────────────────────────────────────────────╢");
+                }
                 println!("║ Enter SSH username (e.g., ec2-user, ubuntu, admin):           ║");
                 println!("╚════════════════════════════════════════════════════════════════╝\n");
 
@@ -217,14 +240,40 @@ pub async fn start_ssh_session(instance: &Ec2Instance) -> Result<()> {
                 let username = username.trim();
                 let username = if username.is_empty() { "ec2-user" } else { username };
 
-                println!("\nConnecting via SSH to {}@{}...\n", username, ip);
-                println!("Note: You may need to specify your SSH key with -i flag if the default key doesn't work.\n");
+                // Ask for SSH key path
+                println!("\n╔════════════════════════════════════════════════════════════════╗");
+                println!("║ SSH Key Selection                                              ║");
+                println!("╟────────────────────────────────────────────────────────────────╢");
+                println!("║ Enter path to SSH private key:                                ║");
+                println!("║ (Press Enter to use default ~/.ssh/id_rsa or SSH agent)       ║");
+                if let Some(key_name) = &instance.key_name {
+                    println!("║ Hint: ~/.ssh/{}.pem                                   ║",
+                             if key_name.len() > 34 { &key_name[..34] } else { key_name });
+                }
+                println!("╚════════════════════════════════════════════════════════════════╝\n");
 
-                let status = Command::new("ssh")
-                    .arg(format!("{}@{}", username, ip))
+                print!("Key path: ");
+                std::io::stdout().flush()?;
+
+                let mut key_path = String::new();
+                std::io::stdin().read_line(&mut key_path)?;
+                let key_path = key_path.trim();
+
+                let mut ssh_command = Command::new("ssh");
+
+                // Add key if specified
+                if !key_path.is_empty() {
+                    ssh_command.arg("-i").arg(key_path);
+                }
+
+                ssh_command.arg(format!("{}@{}", username, ip))
                     .stdin(Stdio::inherit())
                     .stdout(Stdio::inherit())
-                    .stderr(Stdio::inherit())
+                    .stderr(Stdio::inherit());
+
+                println!("\nConnecting via SSH to {}@{}...\n", username, ip);
+
+                let status = ssh_command
                     .status()
                     .context("Failed to execute SSH command. Make sure SSH client is installed.")?;
 
@@ -232,22 +281,27 @@ pub async fn start_ssh_session(instance: &Ec2Instance) -> Result<()> {
                     eprintln!("\n❌ SSH connection failed");
                     eprintln!("\nTroubleshooting:");
                     eprintln!("  1. Ensure you have the correct SSH key");
-                    eprintln!("  2. Try: ssh -i /path/to/key.pem {}@{}", username, ip);
+                    if let Some(key_name) = &instance.key_name {
+                        eprintln!("  2. Try: ssh -i ~/.ssh/{}.pem {}@{}", key_name, username, ip);
+                    } else {
+                        eprintln!("  2. Try specifying the key with: ssh -i /path/to/key.pem {}@{}", username, ip);
+                    }
                     eprintln!("  3. Check security group allows SSH (port 22)");
-                    eprintln!("  4. Verify network connectivity\n");
+                    eprintln!("  4. Verify network connectivity");
+                    eprintln!("  5. Ensure key file permissions are correct (chmod 400)\n");
                 } else {
                     println!("\n✓ SSH session ended successfully\n");
                 }
             } else {
                 eprintln!("\n❌ No IP address available for this instance\n");
             }
-        }
-        "3" => {
+        } else if choice_num == cancel_option_number {
             println!("\nConnection cancelled.\n");
-        }
-        _ => {
+        } else {
             eprintln!("\nInvalid choice. Connection cancelled.\n");
         }
+    } else {
+        eprintln!("\nInvalid choice. Connection cancelled.\n");
     }
 
     println!("Press Enter to return to the console...");

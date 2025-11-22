@@ -2,6 +2,7 @@ use anyhow::Result;
 use aws_config::BehaviorVersion;
 use aws_sdk_ecs::Client as EcsClient;
 use aws_sdk_ec2::Client as Ec2Client;
+use aws_sdk_ssm::Client as SsmClient;
 
 use crate::app::{Cluster, Container, Ec2Instance, Service, Task};
 
@@ -35,6 +36,15 @@ impl AwsClient {
             .build();
 
         Ec2Client::from_conf(ec2_config)
+    }
+
+    fn get_ssm_client(&self, region: &str) -> SsmClient {
+        let region_provider = aws_sdk_ssm::config::Region::new(region.to_string());
+        let ssm_config = aws_sdk_ssm::config::Builder::from(&self.config)
+            .region(region_provider)
+            .build();
+
+        SsmClient::from_conf(ssm_config)
     }
 
     pub async fn list_clusters(&self, region: &str) -> Result<Vec<Cluster>> {
@@ -237,15 +247,48 @@ impl AwsClient {
                     .unwrap_or("N/A")
                     .to_string();
 
+                let key_name = instance.key_name().map(|s| s.to_string());
+
+                let iam_instance_profile = instance
+                    .iam_instance_profile()
+                    .and_then(|p| p.arn())
+                    .map(|s| s.to_string());
+
                 instances.push(Ec2Instance {
-                    instance_id,
+                    instance_id: instance_id.clone(),
                     name,
                     instance_type,
                     state,
                     public_ip,
                     private_ip,
                     availability_zone,
+                    key_name,
+                    iam_instance_profile,
+                    ssm_managed: false, // Will be checked separately
                 });
+            }
+        }
+
+        // Check SSM availability for all instances
+        if !instances.is_empty() {
+            let ssm_client = self.get_ssm_client(region);
+
+            // Check which instances are managed by SSM
+            if let Ok(resp) = ssm_client
+                .describe_instance_information()
+                .send()
+                .await
+            {
+                let managed_instance_ids: std::collections::HashSet<String> = resp
+                    .instance_information_list()
+                    .iter()
+                    .filter_map(|info| info.instance_id())
+                    .map(|id| id.to_string())
+                    .collect();
+
+                for instance in &mut instances {
+                    instance.ssm_managed = managed_instance_ids.contains(&instance.instance_id);
+                }
             }
         }
 

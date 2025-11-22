@@ -12,6 +12,7 @@ crossterm = "0.27"
 aws-config = "1.1"
 aws-sdk-ecs = "1.13"
 aws-sdk-ec2 = "1.21"
+aws-sdk-ssm = "1.15"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
