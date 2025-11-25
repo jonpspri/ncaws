@@ -466,6 +466,11 @@ fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
         Span::styled("i: info", Style::default().fg(Color::Yellow)),
     ];
 
+    if app.navigation.level == NavigationLevel::Service {
+        footer_text.push(Span::raw(" | "));
+        footer_text.push(Span::styled("f: deploy", Style::default().fg(Color::Green)));
+    }
+
     if app.navigation.level == NavigationLevel::Container {
         footer_text.push(Span::raw(" | "));
         footer_text.push(Span::styled("e: exec", Style::default().fg(Color::Green)));

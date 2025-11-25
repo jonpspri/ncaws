@@ -10,6 +10,7 @@ pub enum AppEvent {
     TasksLoaded(Vec<Task>),
     ContainersLoaded(Vec<Container>),
     Ec2InstancesLoaded(Vec<Ec2Instance>),
+    DeploymentTriggered(String),
     Error(String),
 }
 
@@ -454,6 +455,9 @@ impl App {
                 self.selected_index = 0;
                 self.status_message = format!("Found {} EC2 instances", self.ec2_instances.len());
             }
+            AppEvent::DeploymentTriggered(service_name) => {
+                self.status_message = format!("Deployment triggered for {}", service_name);
+            }
             AppEvent::Error(msg) => {
                 self.error_message = Some(msg);
                 self.status_message = "Error occurred".to_string();
@@ -491,6 +495,44 @@ impl App {
                 }
             }
             _ => {}
+        }
+        Ok(())
+    }
+
+    pub async fn force_deployment(&mut self, tx: mpsc::Sender<AppEvent>) -> Result<()> {
+        if self.navigation.level != NavigationLevel::Service {
+            return Ok(());
+        }
+
+        if let Some(service) = self.services.get(self.selected_index) {
+            if let (Some(region), Some(cluster)) = (
+                &self.navigation.selected_region,
+                &self.navigation.selected_cluster,
+            ) {
+                self.loading = true;
+                self.status_message = format!("Triggering deployment for {}...", service.name);
+
+                let client = self.aws_client.clone();
+                let region_name = region.name.clone();
+                let cluster_arn = cluster.arn.clone();
+                let service_name = service.name.clone();
+
+                tokio::spawn(async move {
+                    match client
+                        .force_new_deployment(&region_name, &cluster_arn, &service_name)
+                        .await
+                    {
+                        Ok(()) => {
+                            let _ = tx.send(AppEvent::DeploymentTriggered(service_name)).await;
+                        }
+                        Err(e) => {
+                            let _ = tx
+                                .send(AppEvent::Error(format!("Failed to trigger deployment: {}", e)))
+                                .await;
+                        }
+                    }
+                });
+            }
         }
         Ok(())
     }

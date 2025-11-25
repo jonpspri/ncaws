@@ -204,6 +204,25 @@ impl AwsClient {
         Ok(containers)
     }
 
+    pub async fn force_new_deployment(
+        &self,
+        region: &str,
+        cluster_arn: &str,
+        service_name: &str,
+    ) -> Result<()> {
+        let client = self.get_ecs_client(region);
+
+        client
+            .update_service()
+            .cluster(cluster_arn)
+            .service(service_name)
+            .force_new_deployment(true)
+            .send()
+            .await?;
+
+        Ok(())
+    }
+
     pub async fn list_ec2_instances(&self, region: &str) -> Result<Vec<Ec2Instance>> {
         let client = self.get_ec2_client(region);
 

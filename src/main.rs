@@ -99,6 +99,11 @@ async fn run_app(
                             // Execute command on container (e) or SSH to EC2 (s)
                             app.execute_command().await?;
                         }
+                        KeyCode::Char('f') => {
+                            // Force new deployment for ECS service
+                            let tx = tx.clone();
+                            app.force_deployment(tx).await?;
+                        }
                         _ => {}
                     }
                 }
