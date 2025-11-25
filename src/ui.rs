@@ -40,6 +40,7 @@ fn draw_header(f: &mut Frame, app: &App, area: Rect) {
 fn build_breadcrumb(app: &App) -> String {
     let mut parts = vec![];
 
+    // Region is always first
     if let Some(region) = &app.navigation.selected_region {
         parts.push(region.name.clone());
     } else {
@@ -47,36 +48,84 @@ fn build_breadcrumb(app: &App) -> String {
         return parts.join(" > ");
     }
 
-    if let Some(cluster) = &app.navigation.selected_cluster {
-        parts.push(cluster.name.clone());
-    } else if app.navigation.level != NavigationLevel::Region {
-        parts.push("Select Cluster".to_string());
-        return parts.join(" > ");
-    }
-
-    if let Some(service) = &app.navigation.selected_service {
-        parts.push(service.name.clone());
-    } else if app.navigation.level == NavigationLevel::Service
-        || app.navigation.level == NavigationLevel::Task
-        || app.navigation.level == NavigationLevel::Container
-    {
+    // Service type
+    if let Some(service_type) = &app.navigation.service_type {
+        match service_type {
+            ServiceType::ECS => parts.push("ECS".to_string()),
+            ServiceType::EC2 => parts.push("EC2".to_string()),
+            ServiceType::RDS => parts.push("RDS".to_string()),
+        }
+    } else if app.navigation.level == NavigationLevel::ServiceType {
         parts.push("Select Service".to_string());
         return parts.join(" > ");
-    }
-
-    if let Some(task) = &app.navigation.selected_task {
-        parts.push(task.task_id.clone());
-    } else if app.navigation.level == NavigationLevel::Task
-        || app.navigation.level == NavigationLevel::Container
-    {
-        parts.push("Select Task".to_string());
+    } else {
         return parts.join(" > ");
     }
 
-    if let Some(container) = &app.navigation.selected_container {
-        parts.push(container.name.clone());
-    } else if app.navigation.level == NavigationLevel::Container {
-        parts.push("Select Container".to_string());
+    // Handle ECS-specific navigation
+    if app.navigation.service_type == Some(ServiceType::ECS) {
+        if let Some(cluster) = &app.navigation.selected_cluster {
+            parts.push(cluster.name.clone());
+        } else if app.navigation.level == NavigationLevel::Cluster
+            || app.navigation.level == NavigationLevel::Service
+            || app.navigation.level == NavigationLevel::Task
+            || app.navigation.level == NavigationLevel::Container
+        {
+            parts.push("Select Cluster".to_string());
+            return parts.join(" > ");
+        }
+
+        if let Some(service) = &app.navigation.selected_service {
+            parts.push(service.name.clone());
+        } else if app.navigation.level == NavigationLevel::Service
+            || app.navigation.level == NavigationLevel::Task
+            || app.navigation.level == NavigationLevel::Container
+        {
+            parts.push("Select Service".to_string());
+            return parts.join(" > ");
+        }
+
+        if let Some(task) = &app.navigation.selected_task {
+            parts.push(task.task_id.clone());
+        } else if app.navigation.level == NavigationLevel::Task
+            || app.navigation.level == NavigationLevel::Container
+        {
+            parts.push("Select Task".to_string());
+            return parts.join(" > ");
+        }
+
+        if let Some(container) = &app.navigation.selected_container {
+            parts.push(container.name.clone());
+        } else if app.navigation.level == NavigationLevel::Container {
+            parts.push("Select Container".to_string());
+        }
+    }
+
+    // Handle EC2-specific navigation
+    if app.navigation.service_type == Some(ServiceType::EC2) {
+        if let Some(instance) = &app.navigation.selected_ec2_instance {
+            parts.push(instance.name.clone());
+        } else if app.navigation.level == NavigationLevel::Ec2Instance {
+            parts.push("Select Instance".to_string());
+        }
+    }
+
+    // Handle RDS-specific navigation
+    if app.navigation.service_type == Some(ServiceType::RDS) {
+        if let Some(cluster) = &app.navigation.selected_rds_cluster {
+            parts.push(cluster.identifier.clone());
+        } else if app.navigation.level == NavigationLevel::RdsCluster
+            || app.navigation.level == NavigationLevel::RdsInstance
+        {
+            parts.push("Select Cluster".to_string());
+            return parts.join(" > ");
+        }
+
+        if let Some(instance) = &app.navigation.selected_rds_instance {
+            parts.push(instance.identifier.clone());
+        } else if app.navigation.level == NavigationLevel::RdsInstance {
+            parts.push("Select Instance".to_string());
+        }
     }
 
     parts.join(" > ")
@@ -99,6 +148,8 @@ fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
         NavigationLevel::Task => draw_task_list(f, app, area),
         NavigationLevel::Container => draw_container_list(f, app, area),
         NavigationLevel::Ec2Instance => draw_ec2_instance_list(f, app, area),
+        NavigationLevel::RdsCluster => draw_rds_cluster_list(f, app, area),
+        NavigationLevel::RdsInstance => draw_rds_instance_list(f, app, area),
     }
 }
 
@@ -153,6 +204,7 @@ fn draw_service_type_list(f: &mut Frame, app: &App, area: Rect) {
             let (name, icon) = match service_type {
                 ServiceType::ECS => ("ECS - Elastic Container Service", "🐳"),
                 ServiceType::EC2 => ("EC2 - Elastic Compute Cloud", "💻"),
+                ServiceType::RDS => ("RDS - Relational Database Service", "🗄️"),
             };
 
             let content = Line::from(vec![
@@ -456,6 +508,138 @@ fn draw_ec2_instance_list(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(list, area);
 }
 
+fn draw_rds_cluster_list(f: &mut Frame, app: &App, area: Rect) {
+    if app.rds_clusters.is_empty() {
+        let msg = Paragraph::new("No RDS clusters found in this region")
+            .block(Block::default().borders(Borders::ALL).title(" RDS Clusters "))
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .rds_clusters
+        .iter()
+        .enumerate()
+        .map(|(i, cluster)| {
+            let style = if i == app.selected_index {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let status_color = match cluster.status.as_str() {
+                "available" => Color::Green,
+                "creating" | "modifying" | "backing-up" => Color::Yellow,
+                "stopped" | "stopping" => Color::Red,
+                _ => Color::Gray,
+            };
+
+            let endpoint_display = cluster.endpoint
+                .as_ref()
+                .map(|e| format!(" - {}", e))
+                .unwrap_or_default();
+
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("  ", style),
+                    Span::styled(&cluster.identifier, style.add_modifier(Modifier::BOLD)),
+                    Span::styled(" [", style),
+                    Span::styled(&cluster.status, Style::default().fg(status_color).bg(if i == app.selected_index { Color::Cyan } else { Color::Reset })),
+                    Span::styled("]", style),
+                ]),
+                Line::from(vec![
+                    Span::styled("    Engine: ", style),
+                    Span::styled(format!("{} {}", cluster.engine, cluster.engine_version), style),
+                    Span::styled(" | Port: ", style),
+                    Span::styled(cluster.port.to_string(), style),
+                    Span::styled(endpoint_display, style),
+                ]),
+            ];
+
+            ListItem::new(lines)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" RDS Clusters (↑/↓ to navigate, Enter to view instances, Esc to go back) "),
+    );
+
+    f.render_widget(list, area);
+}
+
+fn draw_rds_instance_list(f: &mut Frame, app: &App, area: Rect) {
+    if app.rds_instances.is_empty() {
+        let msg = Paragraph::new("No RDS instances found in this cluster")
+            .block(Block::default().borders(Borders::ALL).title(" RDS Instances "))
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .rds_instances
+        .iter()
+        .enumerate()
+        .map(|(i, instance)| {
+            let style = if i == app.selected_index {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let status_color = match instance.status.as_str() {
+                "available" => Color::Green,
+                "creating" | "modifying" | "backing-up" | "rebooting" => Color::Yellow,
+                "stopped" | "stopping" | "failed" => Color::Red,
+                _ => Color::Gray,
+            };
+
+            let endpoint_display = instance.endpoint
+                .as_ref()
+                .map(|e| format!(" - {}:{}", e, instance.port))
+                .unwrap_or_default();
+
+            let lines = vec![
+                Line::from(vec![
+                    Span::styled("  ", style),
+                    Span::styled(&instance.identifier, style.add_modifier(Modifier::BOLD)),
+                    Span::styled(" [", style),
+                    Span::styled(&instance.status, Style::default().fg(status_color).bg(if i == app.selected_index { Color::Cyan } else { Color::Reset })),
+                    Span::styled("]", style),
+                ]),
+                Line::from(vec![
+                    Span::styled("    Class: ", style),
+                    Span::styled(&instance.instance_class, style),
+                    Span::styled(" | AZ: ", style),
+                    Span::styled(&instance.availability_zone, style),
+                    Span::styled(" | Storage: ", style),
+                    Span::styled(format!("{}GB {}", instance.allocated_storage, instance.storage_type), style),
+                    Span::styled(endpoint_display, style),
+                ]),
+            ];
+
+            ListItem::new(lines)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" RDS Instances (↑/↓ to navigate, 'i' for info, Esc to go back) "),
+    );
+
+    f.render_widget(list, area);
+}
+
 fn draw_footer(f: &mut Frame, app: &App, area: Rect) {
     let mut footer_text = vec![
         Span::raw(" q: quit | "),
@@ -570,6 +754,16 @@ fn get_info_text(app: &App) -> String {
                         • Virtual servers (instances) in various configurations\n\
                         • Multiple instance types optimized for different use cases\n\
                         • Flexible pricing models (On-Demand, Reserved, Spot)\n\
+                        ".to_string()
+                    }
+                    ServiceType::RDS => {
+                        "RDS (Relational Database Service)\n\
+                        ══════════════════════════════════\n\n\
+                        AWS RDS makes it easy to set up, operate, and scale relational databases.\n\n\
+                        Features:\n\
+                        • Managed database service for MySQL, PostgreSQL, MariaDB, Oracle, SQL Server\n\
+                        • Aurora for high-performance MySQL and PostgreSQL compatible databases\n\
+                        • Automated backups, patching, and Multi-AZ deployments\n\
                         ".to_string()
                     }
                 }
@@ -713,6 +907,103 @@ fn get_info_text(app: &App) -> String {
                 )
             } else {
                 "No instance selected".to_string()
+            }
+        }
+        NavigationLevel::RdsCluster => {
+            if let Some(cluster) = app.rds_clusters.get(app.selected_index) {
+                let endpoint = cluster.endpoint
+                    .as_ref()
+                    .map(|e| format!("Endpoint: {}:{}\n", e, cluster.port))
+                    .unwrap_or_else(|| "Endpoint: Not available\n".to_string());
+
+                let reader_endpoint = cluster.reader_endpoint
+                    .as_ref()
+                    .map(|e| format!("Reader Endpoint: {}\n", e))
+                    .unwrap_or_else(|| "Reader Endpoint: Not available\n".to_string());
+
+                let database_name = cluster.database_name
+                    .as_ref()
+                    .map(|db| format!("Database Name: {}\n", db))
+                    .unwrap_or_else(|| "Database Name: None\n".to_string());
+
+                let multi_az = if cluster.multi_az { "Yes" } else { "No" };
+                let encrypted = if cluster.storage_encrypted { "Yes" } else { "No" };
+
+                format!(
+                    "RDS Cluster Information\n\
+                    ═══════════════════════\n\n\
+                    Identifier: {}\n\
+                    Status: {}\n\
+                    Engine: {} {}\n\n\
+                    Connection:\n\
+                    {}{}\n\
+                    Configuration:\n\
+                    {}Master Username: {}\n\
+                    Multi-AZ: {}\n\
+                    Storage Encrypted: {}\n\n\
+                    ARN:\n{}\n\
+                    ",
+                    cluster.identifier,
+                    cluster.status,
+                    cluster.engine,
+                    cluster.engine_version,
+                    endpoint,
+                    reader_endpoint,
+                    database_name,
+                    cluster.master_username,
+                    multi_az,
+                    encrypted,
+                    cluster.arn
+                )
+            } else {
+                "No RDS cluster selected".to_string()
+            }
+        }
+        NavigationLevel::RdsInstance => {
+            if let Some(instance) = app.rds_instances.get(app.selected_index) {
+                let endpoint = instance.endpoint
+                    .as_ref()
+                    .map(|e| format!("Endpoint: {}:{}\n", e, instance.port))
+                    .unwrap_or_else(|| "Endpoint: Not available\n".to_string());
+
+                let cluster_info = instance.cluster_identifier
+                    .as_ref()
+                    .map(|id| format!("Cluster: {}\n", id))
+                    .unwrap_or_else(|| "Cluster: Standalone instance\n".to_string());
+
+                let multi_az = if instance.multi_az { "Yes" } else { "No" };
+
+                format!(
+                    "RDS Instance Information\n\
+                    ════════════════════════\n\n\
+                    Identifier: {}\n\
+                    Status: {}\n\
+                    {}\n\
+                    Engine: {} {}\n\
+                    Instance Class: {}\n\n\
+                    Connection:\n\
+                    {}\n\
+                    Configuration:\n\
+                    Availability Zone: {}\n\
+                    Multi-AZ: {}\n\
+                    Storage: {} GB ({})\n\n\
+                    ARN:\n{}\n\
+                    ",
+                    instance.identifier,
+                    instance.status,
+                    cluster_info,
+                    instance.engine,
+                    instance.engine_version,
+                    instance.instance_class,
+                    endpoint,
+                    instance.availability_zone,
+                    multi_az,
+                    instance.allocated_storage,
+                    instance.storage_type,
+                    instance.arn
+                )
+            } else {
+                "No RDS instance selected".to_string()
             }
         }
     }

@@ -10,6 +10,8 @@ pub enum AppEvent {
     TasksLoaded(Vec<Task>),
     ContainersLoaded(Vec<Container>),
     Ec2InstancesLoaded(Vec<Ec2Instance>),
+    RdsClustersLoaded(Vec<RdsCluster>),
+    RdsInstancesLoaded(Vec<RdsInstance>),
     DeploymentTriggered(String),
     Error(String),
 }
@@ -68,10 +70,43 @@ pub struct Ec2Instance {
     pub ssm_managed: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct RdsCluster {
+    pub arn: String,
+    pub identifier: String,
+    pub engine: String,
+    pub engine_version: String,
+    pub status: String,
+    pub endpoint: Option<String>,
+    pub reader_endpoint: Option<String>,
+    pub port: i32,
+    pub master_username: String,
+    pub database_name: Option<String>,
+    pub multi_az: bool,
+    pub storage_encrypted: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct RdsInstance {
+    pub arn: String,
+    pub identifier: String,
+    pub cluster_identifier: Option<String>,
+    pub engine: String,
+    pub engine_version: String,
+    pub instance_class: String,
+    pub status: String,
+    pub endpoint: Option<String>,
+    pub port: i32,
+    pub availability_zone: String,
+    pub multi_az: bool,
+    pub storage_type: String,
+    pub allocated_storage: i32,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum NavigationLevel {
     Region,
-    ServiceType,  // Choose between ECS or EC2
+    ServiceType,  // Choose between ECS, EC2, or RDS
     // ECS path
     Cluster,
     Service,
@@ -79,12 +114,16 @@ pub enum NavigationLevel {
     Container,
     // EC2 path
     Ec2Instance,
+    // RDS path
+    RdsCluster,
+    RdsInstance,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServiceType {
     ECS,
     EC2,
+    RDS,
 }
 
 pub struct NavigationState {
@@ -98,6 +137,9 @@ pub struct NavigationState {
     pub selected_container: Option<Container>,
     // EC2 fields
     pub selected_ec2_instance: Option<Ec2Instance>,
+    // RDS fields
+    pub selected_rds_cluster: Option<RdsCluster>,
+    pub selected_rds_instance: Option<RdsInstance>,
 }
 
 pub struct App {
@@ -112,6 +154,9 @@ pub struct App {
     pub containers: Vec<Container>,
     // EC2 data
     pub ec2_instances: Vec<Ec2Instance>,
+    // RDS data
+    pub rds_clusters: Vec<RdsCluster>,
+    pub rds_instances: Vec<RdsInstance>,
     pub selected_index: usize,
     pub loading: bool,
     pub error_message: Option<String>,
@@ -143,14 +188,18 @@ impl App {
                 selected_task: None,
                 selected_container: None,
                 selected_ec2_instance: None,
+                selected_rds_cluster: None,
+                selected_rds_instance: None,
             },
             regions,
-            service_types: vec![ServiceType::ECS, ServiceType::EC2],
+            service_types: vec![ServiceType::ECS, ServiceType::EC2, ServiceType::RDS],
             clusters: Vec::new(),
             services: Vec::new(),
             tasks: Vec::new(),
             containers: Vec::new(),
             ec2_instances: Vec::new(),
+            rds_clusters: Vec::new(),
+            rds_instances: Vec::new(),
             selected_index: 0,
             loading: false,
             error_message: None,
@@ -177,6 +226,8 @@ impl App {
             NavigationLevel::Task => self.tasks.len(),
             NavigationLevel::Container => self.containers.len(),
             NavigationLevel::Ec2Instance => self.ec2_instances.len(),
+            NavigationLevel::RdsCluster => self.rds_clusters.len(),
+            NavigationLevel::RdsInstance => self.rds_instances.len(),
         }
     }
 
@@ -243,6 +294,23 @@ impl App {
                                     }
                                     Err(e) => {
                                         let _ = tx.send(AppEvent::Error(format!("Failed to load EC2 instances: {}", e))).await;
+                                    }
+                                }
+                            });
+                        }
+                        ServiceType::RDS => {
+                            self.loading = true;
+                            let region = self.navigation.selected_region.as_ref().unwrap().name.clone();
+                            self.status_message = format!("Loading RDS clusters in {}...", region);
+
+                            let client = self.aws_client.clone();
+                            tokio::spawn(async move {
+                                match client.list_rds_clusters(&region).await {
+                                    Ok(clusters) => {
+                                        let _ = tx.send(AppEvent::RdsClustersLoaded(clusters)).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(AppEvent::Error(format!("Failed to load RDS clusters: {}", e))).await;
                                     }
                                 }
                             });
@@ -321,6 +389,30 @@ impl App {
             NavigationLevel::Ec2Instance => {
                 // Already at deepest level for EC2
             }
+            NavigationLevel::RdsCluster => {
+                if let Some(cluster) = self.rds_clusters.get(self.selected_index) {
+                    self.navigation.selected_rds_cluster = Some(cluster.clone());
+                    self.loading = true;
+                    self.status_message = format!("Loading instances for {}...", cluster.identifier);
+
+                    let client = self.aws_client.clone();
+                    let region = self.navigation.selected_region.as_ref().unwrap().name.clone();
+                    let cluster_id = cluster.identifier.clone();
+                    tokio::spawn(async move {
+                        match client.list_rds_instances_for_cluster(&region, &cluster_id).await {
+                            Ok(instances) => {
+                                let _ = tx.send(AppEvent::RdsInstancesLoaded(instances)).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::Error(format!("Failed to load RDS instances: {}", e))).await;
+                            }
+                        }
+                    });
+                }
+            }
+            NavigationLevel::RdsInstance => {
+                // Already at deepest level for RDS
+            }
         }
         Ok(())
     }
@@ -367,6 +459,18 @@ impl App {
                 self.navigation.selected_ec2_instance = None;
                 self.ec2_instances.clear();
                 self.status_message = "Select a service type".to_string();
+            }
+            NavigationLevel::RdsCluster => {
+                self.navigation.level = NavigationLevel::ServiceType;
+                self.navigation.selected_rds_cluster = None;
+                self.rds_clusters.clear();
+                self.status_message = "Select a service type".to_string();
+            }
+            NavigationLevel::RdsInstance => {
+                self.navigation.level = NavigationLevel::RdsCluster;
+                self.navigation.selected_rds_instance = None;
+                self.rds_instances.clear();
+                self.status_message = "Select an RDS cluster".to_string();
             }
         }
     }
@@ -417,6 +521,42 @@ impl App {
             NavigationLevel::Task | NavigationLevel::Container | NavigationLevel::Ec2Instance => {
                 // Similar refresh logic for tasks, containers, and EC2 instances
             }
+            NavigationLevel::RdsCluster => {
+                if let Some(region) = &self.navigation.selected_region {
+                    self.loading = true;
+                    let client = self.aws_client.clone();
+                    let region_name = region.name.clone();
+                    tokio::spawn(async move {
+                        match client.list_rds_clusters(&region_name).await {
+                            Ok(clusters) => {
+                                let _ = tx.send(AppEvent::RdsClustersLoaded(clusters)).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::Error(format!("Failed to refresh: {}", e))).await;
+                            }
+                        }
+                    });
+                }
+            }
+            NavigationLevel::RdsInstance => {
+                if let (Some(region), Some(cluster)) =
+                    (&self.navigation.selected_region, &self.navigation.selected_rds_cluster) {
+                    self.loading = true;
+                    let client = self.aws_client.clone();
+                    let region_name = region.name.clone();
+                    let cluster_id = cluster.identifier.clone();
+                    tokio::spawn(async move {
+                        match client.list_rds_instances_for_cluster(&region_name, &cluster_id).await {
+                            Ok(instances) => {
+                                let _ = tx.send(AppEvent::RdsInstancesLoaded(instances)).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::Error(format!("Failed to refresh: {}", e))).await;
+                            }
+                        }
+                    });
+                }
+            }
         }
         Ok(())
     }
@@ -454,6 +594,18 @@ impl App {
                 self.navigation.level = NavigationLevel::Ec2Instance;
                 self.selected_index = 0;
                 self.status_message = format!("Found {} EC2 instances", self.ec2_instances.len());
+            }
+            AppEvent::RdsClustersLoaded(clusters) => {
+                self.rds_clusters = clusters;
+                self.navigation.level = NavigationLevel::RdsCluster;
+                self.selected_index = 0;
+                self.status_message = format!("Found {} RDS clusters", self.rds_clusters.len());
+            }
+            AppEvent::RdsInstancesLoaded(instances) => {
+                self.rds_instances = instances;
+                self.navigation.level = NavigationLevel::RdsInstance;
+                self.selected_index = 0;
+                self.status_message = format!("Found {} RDS instances", self.rds_instances.len());
             }
             AppEvent::DeploymentTriggered(service_name) => {
                 self.status_message = format!("Deployment triggered for {}", service_name);

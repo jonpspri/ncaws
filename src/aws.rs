@@ -3,8 +3,9 @@ use aws_config::BehaviorVersion;
 use aws_sdk_ecs::Client as EcsClient;
 use aws_sdk_ec2::Client as Ec2Client;
 use aws_sdk_ssm::Client as SsmClient;
+use aws_sdk_rds::Client as RdsClient;
 
-use crate::app::{Cluster, Container, Ec2Instance, Service, Task};
+use crate::app::{Cluster, Container, Ec2Instance, RdsCluster, RdsInstance, Service, Task};
 
 #[derive(Clone)]
 pub struct AwsClient {
@@ -45,6 +46,15 @@ impl AwsClient {
             .build();
 
         SsmClient::from_conf(ssm_config)
+    }
+
+    fn get_rds_client(&self, region: &str) -> RdsClient {
+        let region_provider = aws_sdk_rds::config::Region::new(region.to_string());
+        let rds_config = aws_sdk_rds::config::Builder::from(&self.config)
+            .region(region_provider)
+            .build();
+
+        RdsClient::from_conf(rds_config)
     }
 
     pub async fn list_clusters(&self, region: &str) -> Result<Vec<Cluster>> {
@@ -310,6 +320,113 @@ impl AwsClient {
                 }
             }
         }
+
+        Ok(instances)
+    }
+
+    pub async fn list_rds_clusters(&self, region: &str) -> Result<Vec<RdsCluster>> {
+        let client = self.get_rds_client(region);
+
+        let resp = client
+            .describe_db_clusters()
+            .send()
+            .await?;
+
+        let clusters = resp
+            .db_clusters()
+            .iter()
+            .filter_map(|c| {
+                Some(RdsCluster {
+                    arn: c.db_cluster_arn()?.to_string(),
+                    identifier: c.db_cluster_identifier()?.to_string(),
+                    engine: c.engine().unwrap_or("unknown").to_string(),
+                    engine_version: c.engine_version().unwrap_or("unknown").to_string(),
+                    status: c.status().unwrap_or("unknown").to_string(),
+                    endpoint: c.endpoint().map(|s| s.to_string()),
+                    reader_endpoint: c.reader_endpoint().map(|s| s.to_string()),
+                    port: c.port().unwrap_or(0),
+                    master_username: c.master_username().unwrap_or("N/A").to_string(),
+                    database_name: c.database_name().map(|s| s.to_string()),
+                    multi_az: c.multi_az().unwrap_or(false),
+                    storage_encrypted: c.storage_encrypted().unwrap_or(false),
+                })
+            })
+            .collect();
+
+        Ok(clusters)
+    }
+
+    pub async fn list_rds_instances(&self, region: &str) -> Result<Vec<RdsInstance>> {
+        let client = self.get_rds_client(region);
+
+        let resp = client
+            .describe_db_instances()
+            .send()
+            .await?;
+
+        let instances = resp
+            .db_instances()
+            .iter()
+            .filter_map(|i| {
+                Some(RdsInstance {
+                    arn: i.db_instance_arn()?.to_string(),
+                    identifier: i.db_instance_identifier()?.to_string(),
+                    cluster_identifier: i.db_cluster_identifier().map(|s| s.to_string()),
+                    engine: i.engine().unwrap_or("unknown").to_string(),
+                    engine_version: i.engine_version().unwrap_or("unknown").to_string(),
+                    instance_class: i.db_instance_class().unwrap_or("unknown").to_string(),
+                    status: i.db_instance_status().unwrap_or("unknown").to_string(),
+                    endpoint: i.endpoint().and_then(|e| e.address()).map(|s| s.to_string()),
+                    port: i.endpoint().and_then(|e| e.port()).unwrap_or(0),
+                    availability_zone: i.availability_zone().unwrap_or("N/A").to_string(),
+                    multi_az: i.multi_az().unwrap_or(false),
+                    storage_type: i.storage_type().unwrap_or("N/A").to_string(),
+                    allocated_storage: i.allocated_storage().unwrap_or(0),
+                })
+            })
+            .collect();
+
+        Ok(instances)
+    }
+
+    pub async fn list_rds_instances_for_cluster(
+        &self,
+        region: &str,
+        cluster_identifier: &str,
+    ) -> Result<Vec<RdsInstance>> {
+        let client = self.get_rds_client(region);
+
+        let resp = client
+            .describe_db_instances()
+            .send()
+            .await?;
+
+        let instances = resp
+            .db_instances()
+            .iter()
+            .filter(|i| {
+                i.db_cluster_identifier()
+                    .map(|id| id == cluster_identifier)
+                    .unwrap_or(false)
+            })
+            .filter_map(|i| {
+                Some(RdsInstance {
+                    arn: i.db_instance_arn()?.to_string(),
+                    identifier: i.db_instance_identifier()?.to_string(),
+                    cluster_identifier: i.db_cluster_identifier().map(|s| s.to_string()),
+                    engine: i.engine().unwrap_or("unknown").to_string(),
+                    engine_version: i.engine_version().unwrap_or("unknown").to_string(),
+                    instance_class: i.db_instance_class().unwrap_or("unknown").to_string(),
+                    status: i.db_instance_status().unwrap_or("unknown").to_string(),
+                    endpoint: i.endpoint().and_then(|e| e.address()).map(|s| s.to_string()),
+                    port: i.endpoint().and_then(|e| e.port()).unwrap_or(0),
+                    availability_zone: i.availability_zone().unwrap_or("N/A").to_string(),
+                    multi_az: i.multi_az().unwrap_or(false),
+                    storage_type: i.storage_type().unwrap_or("N/A").to_string(),
+                    allocated_storage: i.allocated_storage().unwrap_or(0),
+                })
+            })
+            .collect();
 
         Ok(instances)
     }
