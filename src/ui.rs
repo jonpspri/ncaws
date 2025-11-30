@@ -6,7 +6,7 @@ use ratatui::{
     Frame,
 };
 
-use crate::app::{App, NavigationLevel, ServiceType};
+use crate::app::{App, ClusterAction, NavigationLevel, ServiceType};
 
 pub fn draw(f: &mut Frame, app: &App) {
     let chunks = Layout::default()
@@ -54,9 +54,10 @@ fn build_breadcrumb(app: &App) -> String {
             ServiceType::ECS => parts.push("ECS".to_string()),
             ServiceType::EC2 => parts.push("EC2".to_string()),
             ServiceType::RDS => parts.push("RDS".to_string()),
+            ServiceType::ChangeRegion => {}
         }
     } else if app.navigation.level == NavigationLevel::ServiceType {
-        parts.push("Select Service".to_string());
+        parts.push("Select Service Type".to_string());
         return parts.join(" > ");
     } else {
         return parts.join(" > ");
@@ -144,8 +145,10 @@ fn draw_main_content(f: &mut Frame, app: &App, area: Rect) {
         NavigationLevel::Region => draw_region_list(f, app, area),
         NavigationLevel::ServiceType => draw_service_type_list(f, app, area),
         NavigationLevel::Cluster => draw_cluster_list(f, app, area),
+        NavigationLevel::ClusterAction => draw_cluster_action_list(f, app, area),
         NavigationLevel::Service => draw_service_list(f, app, area),
         NavigationLevel::Task => draw_task_list(f, app, area),
+        NavigationLevel::StoppedTask => draw_stopped_task_list(f, app, area),
         NavigationLevel::Container => draw_container_list(f, app, area),
         NavigationLevel::Ec2Instance => draw_ec2_instance_list(f, app, area),
         NavigationLevel::RdsCluster => draw_rds_cluster_list(f, app, area),
@@ -205,6 +208,7 @@ fn draw_service_type_list(f: &mut Frame, app: &App, area: Rect) {
                 ServiceType::ECS => ("ECS - Elastic Container Service", "🐳"),
                 ServiceType::EC2 => ("EC2 - Elastic Compute Cloud", "💻"),
                 ServiceType::RDS => ("RDS - Relational Database Service", "🗄️"),
+                ServiceType::ChangeRegion => ("Change Region", "🌍"),
             };
 
             let content = Line::from(vec![
@@ -263,6 +267,53 @@ fn draw_cluster_list(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Clusters (↑/↓ to navigate, Enter to select, Esc to go back) "),
+    );
+
+    f.render_widget(list, area);
+}
+
+fn draw_cluster_action_list(f: &mut Frame, app: &App, area: Rect) {
+    let items: Vec<ListItem> = app
+        .cluster_actions
+        .iter()
+        .enumerate()
+        .map(|(i, action)| {
+            let style = if i == app.selected_index {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let (name, icon) = match action {
+                ClusterAction::Services => ("Services", "📦"),
+                ClusterAction::StoppedTasks => ("Stopped Tasks", "⏹️"),
+            };
+
+            let content = Line::from(vec![
+                Span::styled("  ", style),
+                Span::styled(icon, style),
+                Span::styled(" ", style),
+                Span::styled(name, style),
+            ]);
+
+            ListItem::new(content)
+        })
+        .collect();
+
+    let cluster_name = app
+        .navigation
+        .selected_cluster
+        .as_ref()
+        .map(|c| c.name.as_str())
+        .unwrap_or("Unknown");
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(format!(" {} - Actions (↑/↓ to navigate, Enter to select, Esc to go back) ", cluster_name)),
     );
 
     f.render_widget(list, area);
@@ -371,6 +422,59 @@ fn draw_task_list(f: &mut Frame, app: &App, area: Rect) {
         Block::default()
             .borders(Borders::ALL)
             .title(" Tasks (↑/↓ to navigate, Enter to select, Esc to go back) "),
+    );
+
+    f.render_widget(list, area);
+}
+
+fn draw_stopped_task_list(f: &mut Frame, app: &App, area: Rect) {
+    if app.stopped_tasks.is_empty() {
+        let msg = Paragraph::new("No stopped tasks found in this cluster")
+            .block(Block::default().borders(Borders::ALL).title(" Stopped Tasks "))
+            .style(Style::default().fg(Color::Yellow));
+        f.render_widget(msg, area);
+        return;
+    }
+
+    let items: Vec<ListItem> = app
+        .stopped_tasks
+        .iter()
+        .enumerate()
+        .map(|(i, task)| {
+            let style = if i == app.selected_index {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::White)
+            };
+
+            let status_color = match task.status.as_str() {
+                "STOPPED" => Color::Red,
+                "DEPROVISIONING" => Color::Yellow,
+                _ => Color::Gray,
+            };
+
+            let content = Line::from(vec![
+                Span::styled("  ", style),
+                Span::styled(&task.task_id, style),
+                Span::styled(" [", style),
+                Span::styled(&task.status, Style::default().fg(status_color).bg(if i == app.selected_index { Color::Cyan } else { Color::Reset })),
+                Span::styled("] CPU: ", style),
+                Span::styled(&task.cpu, style),
+                Span::styled(" MEM: ", style),
+                Span::styled(&task.memory, style),
+            ]);
+
+            ListItem::new(content)
+        })
+        .collect();
+
+    let list = List::new(items).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(" Stopped Tasks (↑/↓ to navigate, 'i' for info, Esc to go back) "),
     );
 
     f.render_widget(list, area);
@@ -766,6 +870,20 @@ fn get_info_text(app: &App) -> String {
                         • Automated backups, patching, and Multi-AZ deployments\n\
                         ".to_string()
                     }
+                    ServiceType::ChangeRegion => {
+                        let current_region = app.navigation.selected_region
+                            .as_ref()
+                            .map(|r| r.name.as_str())
+                            .unwrap_or("None");
+                        format!(
+                            "Change Region\n\
+                            ══════════════\n\n\
+                            Current region: {}\n\n\
+                            Select this option to switch to a different AWS region.\n\
+                            ",
+                            current_region
+                        )
+                    }
                 }
             } else {
                 "No service type selected".to_string()
@@ -784,6 +902,34 @@ fn get_info_text(app: &App) -> String {
                 )
             } else {
                 "No cluster selected".to_string()
+            }
+        }
+        NavigationLevel::ClusterAction => {
+            if let Some(action) = app.cluster_actions.get(app.selected_index) {
+                match action {
+                    ClusterAction::Services => {
+                        "Services\n\
+                        ════════\n\n\
+                        View and manage ECS services running in this cluster.\n\n\
+                        From here you can:\n\
+                        • View service status and task counts\n\
+                        • Navigate to tasks and containers\n\
+                        • Trigger new deployments\n\
+                        ".to_string()
+                    }
+                    ClusterAction::StoppedTasks => {
+                        "Stopped Tasks\n\
+                        ═════════════\n\n\
+                        View recently stopped tasks in this cluster.\n\n\
+                        This includes:\n\
+                        • Tasks that completed successfully\n\
+                        • Tasks that failed or were terminated\n\
+                        • Tasks from scaling events\n\
+                        ".to_string()
+                    }
+                }
+            } else {
+                "No action selected".to_string()
             }
         }
         NavigationLevel::Service => {
@@ -826,6 +972,27 @@ fn get_info_text(app: &App) -> String {
                 )
             } else {
                 "No task selected".to_string()
+            }
+        }
+        NavigationLevel::StoppedTask => {
+            if let Some(task) = app.stopped_tasks.get(app.selected_index) {
+                format!(
+                    "Stopped Task Information\n\
+                    ════════════════════════\n\n\
+                    Task ID: {}\n\
+                    Status: {}\n\
+                    CPU: {}\n\
+                    Memory: {}\n\n\
+                    ARN:\n{}\n\
+                    ",
+                    task.task_id,
+                    task.status,
+                    task.cpu,
+                    task.memory,
+                    task.arn
+                )
+            } else {
+                "No stopped task selected".to_string()
             }
         }
         NavigationLevel::Container => {

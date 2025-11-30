@@ -178,6 +178,54 @@ impl AwsClient {
         Ok(tasks)
     }
 
+    pub async fn list_stopped_tasks(
+        &self,
+        region: &str,
+        cluster_arn: &str,
+    ) -> Result<Vec<Task>> {
+        let client = self.get_ecs_client(region);
+
+        let resp = client
+            .list_tasks()
+            .cluster(cluster_arn)
+            .desired_status(aws_sdk_ecs::types::DesiredStatus::Stopped)
+            .send()
+            .await?;
+
+        let task_arns = resp.task_arns();
+
+        if task_arns.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        // Describe tasks to get more details
+        let describe_resp = client
+            .describe_tasks()
+            .cluster(cluster_arn)
+            .set_tasks(Some(task_arns.to_vec()))
+            .send()
+            .await?;
+
+        let tasks = describe_resp
+            .tasks()
+            .iter()
+            .filter_map(|t| {
+                let arn = t.task_arn()?.to_string();
+                let task_id = arn.split('/').last()?.to_string();
+
+                Some(Task {
+                    arn,
+                    task_id,
+                    status: t.last_status().unwrap_or("UNKNOWN").to_string(),
+                    cpu: t.cpu().unwrap_or("N/A").to_string(),
+                    memory: t.memory().unwrap_or("N/A").to_string(),
+                })
+            })
+            .collect();
+
+        Ok(tasks)
+    }
+
     pub async fn list_containers(
         &self,
         region: &str,

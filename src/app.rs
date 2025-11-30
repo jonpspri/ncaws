@@ -8,6 +8,7 @@ pub enum AppEvent {
     ClustersLoaded(Vec<Cluster>),
     ServicesLoaded(Vec<Service>),
     TasksLoaded(Vec<Task>),
+    StoppedTasksLoaded(Vec<Task>),
     ContainersLoaded(Vec<Container>),
     Ec2InstancesLoaded(Vec<Ec2Instance>),
     RdsClustersLoaded(Vec<RdsCluster>),
@@ -109,9 +110,11 @@ pub enum NavigationLevel {
     ServiceType,  // Choose between ECS, EC2, or RDS
     // ECS path
     Cluster,
+    ClusterAction,  // Choose between Services or Stopped Tasks
     Service,
     Task,
     Container,
+    StoppedTask,  // View stopped tasks for a cluster
     // EC2 path
     Ec2Instance,
     // RDS path
@@ -124,6 +127,13 @@ pub enum ServiceType {
     ECS,
     EC2,
     RDS,
+    ChangeRegion,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClusterAction {
+    Services,
+    StoppedTasks,
 }
 
 pub struct NavigationState {
@@ -147,10 +157,12 @@ pub struct App {
     pub navigation: NavigationState,
     pub regions: Vec<Region>,
     pub service_types: Vec<ServiceType>,
+    pub cluster_actions: Vec<ClusterAction>,
     // ECS data
     pub clusters: Vec<Cluster>,
     pub services: Vec<Service>,
     pub tasks: Vec<Task>,
+    pub stopped_tasks: Vec<Task>,
     pub containers: Vec<Container>,
     // EC2 data
     pub ec2_instances: Vec<Ec2Instance>,
@@ -177,12 +189,34 @@ impl App {
             Region { name: "ap-northeast-1".to_string() },
         ];
 
+        // Check for AWS_REGION environment variable
+        let (initial_level, selected_region, status_message) =
+            if let Ok(env_region) = std::env::var("AWS_REGION") {
+                (
+                    NavigationLevel::ServiceType,
+                    Some(Region { name: env_region.clone() }),
+                    format!("Using region {} from AWS_REGION. Select service type", env_region),
+                )
+            } else if let Ok(env_region) = std::env::var("AWS_DEFAULT_REGION") {
+                (
+                    NavigationLevel::ServiceType,
+                    Some(Region { name: env_region.clone() }),
+                    format!("Using region {} from AWS_DEFAULT_REGION. Select service type", env_region),
+                )
+            } else {
+                (
+                    NavigationLevel::Region,
+                    None,
+                    "Select a region to begin".to_string(),
+                )
+            };
+
         Ok(Self {
             aws_client,
             navigation: NavigationState {
-                level: NavigationLevel::Region,
+                level: initial_level,
                 service_type: None,
-                selected_region: None,
+                selected_region,
                 selected_cluster: None,
                 selected_service: None,
                 selected_task: None,
@@ -192,10 +226,12 @@ impl App {
                 selected_rds_instance: None,
             },
             regions,
-            service_types: vec![ServiceType::ECS, ServiceType::EC2, ServiceType::RDS],
+            service_types: vec![ServiceType::ECS, ServiceType::EC2, ServiceType::RDS, ServiceType::ChangeRegion],
+            cluster_actions: vec![ClusterAction::Services, ClusterAction::StoppedTasks],
             clusters: Vec::new(),
             services: Vec::new(),
             tasks: Vec::new(),
+            stopped_tasks: Vec::new(),
             containers: Vec::new(),
             ec2_instances: Vec::new(),
             rds_clusters: Vec::new(),
@@ -203,7 +239,7 @@ impl App {
             selected_index: 0,
             loading: false,
             error_message: None,
-            status_message: "Select a region to begin".to_string(),
+            status_message,
             show_info_popup: false,
             quit: false,
         })
@@ -222,8 +258,10 @@ impl App {
             NavigationLevel::Region => self.regions.len(),
             NavigationLevel::ServiceType => self.service_types.len(),
             NavigationLevel::Cluster => self.clusters.len(),
+            NavigationLevel::ClusterAction => self.cluster_actions.len(),
             NavigationLevel::Service => self.services.len(),
             NavigationLevel::Task => self.tasks.len(),
+            NavigationLevel::StoppedTask => self.stopped_tasks.len(),
             NavigationLevel::Container => self.containers.len(),
             NavigationLevel::Ec2Instance => self.ec2_instances.len(),
             NavigationLevel::RdsCluster => self.rds_clusters.len(),
@@ -261,10 +299,16 @@ impl App {
             }
             NavigationLevel::ServiceType => {
                 if let Some(service_type) = self.service_types.get(self.selected_index) {
-                    self.navigation.service_type = Some(service_type.clone());
-
                     match service_type {
+                        ServiceType::ChangeRegion => {
+                            // Go to region selection
+                            self.navigation.level = NavigationLevel::Region;
+                            self.navigation.selected_region = None;
+                            self.status_message = "Select a region".to_string();
+                            self.selected_index = 0;
+                        }
                         ServiceType::ECS => {
+                            self.navigation.service_type = Some(service_type.clone());
                             self.loading = true;
                             let region = self.navigation.selected_region.as_ref().unwrap().name.clone();
                             self.status_message = format!("Loading ECS clusters in {}...", region);
@@ -282,6 +326,7 @@ impl App {
                             });
                         }
                         ServiceType::EC2 => {
+                            self.navigation.service_type = Some(service_type.clone());
                             self.loading = true;
                             let region = self.navigation.selected_region.as_ref().unwrap().name.clone();
                             self.status_message = format!("Loading EC2 instances in {}...", region);
@@ -321,22 +366,53 @@ impl App {
             NavigationLevel::Cluster => {
                 if let Some(cluster) = self.clusters.get(self.selected_index) {
                     self.navigation.selected_cluster = Some(cluster.clone());
-                    self.loading = true;
-                    self.status_message = format!("Loading services in {}...", cluster.name);
+                    self.navigation.level = NavigationLevel::ClusterAction;
+                    self.status_message = format!("Select action for cluster {}", cluster.name);
+                    self.selected_index = 0;
+                }
+            }
+            NavigationLevel::ClusterAction => {
+                if let Some(action) = self.cluster_actions.get(self.selected_index) {
+                    match action {
+                        ClusterAction::Services => {
+                            self.loading = true;
+                            let cluster = self.navigation.selected_cluster.as_ref().unwrap();
+                            self.status_message = format!("Loading services in {}...", cluster.name);
 
-                    let client = self.aws_client.clone();
-                    let region = self.navigation.selected_region.as_ref().unwrap().name.clone();
-                    let cluster_arn = cluster.arn.clone();
-                    tokio::spawn(async move {
-                        match client.list_services(&region, &cluster_arn).await {
-                            Ok(services) => {
-                                let _ = tx.send(AppEvent::ServicesLoaded(services)).await;
-                            }
-                            Err(e) => {
-                                let _ = tx.send(AppEvent::Error(format!("Failed to load services: {}", e))).await;
-                            }
+                            let client = self.aws_client.clone();
+                            let region = self.navigation.selected_region.as_ref().unwrap().name.clone();
+                            let cluster_arn = cluster.arn.clone();
+                            tokio::spawn(async move {
+                                match client.list_services(&region, &cluster_arn).await {
+                                    Ok(services) => {
+                                        let _ = tx.send(AppEvent::ServicesLoaded(services)).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(AppEvent::Error(format!("Failed to load services: {}", e))).await;
+                                    }
+                                }
+                            });
                         }
-                    });
+                        ClusterAction::StoppedTasks => {
+                            self.loading = true;
+                            let cluster = self.navigation.selected_cluster.as_ref().unwrap();
+                            self.status_message = format!("Loading stopped tasks in {}...", cluster.name);
+
+                            let client = self.aws_client.clone();
+                            let region = self.navigation.selected_region.as_ref().unwrap().name.clone();
+                            let cluster_arn = cluster.arn.clone();
+                            tokio::spawn(async move {
+                                match client.list_stopped_tasks(&region, &cluster_arn).await {
+                                    Ok(tasks) => {
+                                        let _ = tx.send(AppEvent::StoppedTasksLoaded(tasks)).await;
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(AppEvent::Error(format!("Failed to load stopped tasks: {}", e))).await;
+                                    }
+                                }
+                            });
+                        }
+                    }
                 }
             }
             NavigationLevel::Service => {
@@ -385,6 +461,9 @@ impl App {
             }
             NavigationLevel::Container => {
                 // Already at deepest level for ECS
+            }
+            NavigationLevel::StoppedTask => {
+                // Already at deepest level for stopped tasks view
             }
             NavigationLevel::Ec2Instance => {
                 // Already at deepest level for EC2
@@ -436,11 +515,15 @@ impl App {
                 self.clusters.clear();
                 self.status_message = "Select a service type".to_string();
             }
-            NavigationLevel::Service => {
+            NavigationLevel::ClusterAction => {
                 self.navigation.level = NavigationLevel::Cluster;
+                self.status_message = "Select a cluster".to_string();
+            }
+            NavigationLevel::Service => {
+                self.navigation.level = NavigationLevel::ClusterAction;
                 self.navigation.selected_service = None;
                 self.services.clear();
-                self.status_message = "Select a cluster".to_string();
+                self.status_message = "Select an action".to_string();
             }
             NavigationLevel::Task => {
                 self.navigation.level = NavigationLevel::Service;
@@ -453,6 +536,11 @@ impl App {
                 self.navigation.selected_container = None;
                 self.containers.clear();
                 self.status_message = "Select a task".to_string();
+            }
+            NavigationLevel::StoppedTask => {
+                self.navigation.level = NavigationLevel::ClusterAction;
+                self.stopped_tasks.clear();
+                self.status_message = "Select an action".to_string();
             }
             NavigationLevel::Ec2Instance => {
                 self.navigation.level = NavigationLevel::ServiceType;
@@ -479,8 +567,8 @@ impl App {
         self.selected_index = 0;
 
         match self.navigation.level {
-            NavigationLevel::Region | NavigationLevel::ServiceType => {
-                // Nothing to refresh at region or service type level
+            NavigationLevel::Region | NavigationLevel::ServiceType | NavigationLevel::ClusterAction => {
+                // Nothing to refresh at these levels
             }
             NavigationLevel::Cluster => {
                 if let Some(region) = &self.navigation.selected_region {
@@ -510,6 +598,25 @@ impl App {
                         match client.list_services(&region_name, &cluster_arn).await {
                             Ok(services) => {
                                 let _ = tx.send(AppEvent::ServicesLoaded(services)).await;
+                            }
+                            Err(e) => {
+                                let _ = tx.send(AppEvent::Error(format!("Failed to refresh: {}", e))).await;
+                            }
+                        }
+                    });
+                }
+            }
+            NavigationLevel::StoppedTask => {
+                if let (Some(region), Some(cluster)) =
+                    (&self.navigation.selected_region, &self.navigation.selected_cluster) {
+                    self.loading = true;
+                    let client = self.aws_client.clone();
+                    let region_name = region.name.clone();
+                    let cluster_arn = cluster.arn.clone();
+                    tokio::spawn(async move {
+                        match client.list_stopped_tasks(&region_name, &cluster_arn).await {
+                            Ok(tasks) => {
+                                let _ = tx.send(AppEvent::StoppedTasksLoaded(tasks)).await;
                             }
                             Err(e) => {
                                 let _ = tx.send(AppEvent::Error(format!("Failed to refresh: {}", e))).await;
@@ -582,6 +689,12 @@ impl App {
                 self.navigation.level = NavigationLevel::Task;
                 self.selected_index = 0;
                 self.status_message = format!("Found {} tasks", self.tasks.len());
+            }
+            AppEvent::StoppedTasksLoaded(tasks) => {
+                self.stopped_tasks = tasks;
+                self.navigation.level = NavigationLevel::StoppedTask;
+                self.selected_index = 0;
+                self.status_message = format!("Found {} stopped tasks", self.stopped_tasks.len());
             }
             AppEvent::ContainersLoaded(containers) => {
                 self.containers = containers;
